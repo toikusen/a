@@ -5,18 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SVG Path animated Text</title>
 <style>
+  /* --len / --off 註冊成真正的 <length>，就不必再寫 calc(var(--len) * 1px) 這種 hack，
+     而且瀏覽器知道它們可以插值。--total 由 JS 用 getTotalLength() 填，避免手寫長度。 */
+  @property --len   { syntax: "<length>"; inherits: false; initial-value: 0px }
+  @property --off   { syntax: "<length>"; inherits: false; initial-value: 0px }
+  @property --total { syntax: "<length>"; inherits: true;  initial-value: 0px }
+
   :root {
     --bg: #5677fc;
     --ink: #f5f6f7;
     --ease: cubic-bezier(0.445, 0.05, 0.55, 0.95);
-    --total: 1180px;        /* 整條路徑長度，用來把沒畫到的部分藏起來 */
   }
 
   body {
     margin: 0;
     min-height: 100dvh;
     display: grid;
-    place-items: center;    /* 取代原本用 JS 算 margin-top 置中 */
+    place-items: center;
     background: var(--bg);
   }
 
@@ -33,33 +38,23 @@
     aspect-ratio: 3 / 2;
   }
 
-  /* 每個筆劃只是同一條路徑的一段：--off 是起點，--len 是長度 */
+  /* 每個筆劃只是同一條路徑的一段：--off 是起點，--len 是長度。
+     這裡寫的是「畫完」的樣子 —— 也就是沒有動畫時的安全狀態：
+     JS 沒跑、或使用者要求減少動態時，看到的是完整的 Design，而不是一片空白。 */
   .logo use {
     fill: none;
     stroke: var(--ink);
     stroke-width: 2px;
     stroke-linecap: round;
-    stroke-dasharray: 0px var(--total);
-    stroke-dashoffset: 0px;
-    transition:
-      stroke-dasharray var(--draw, 5.5s) var(--ease),
-      stroke-dashoffset var(--draw, 5.5s) var(--ease);
-  }
-
-  .logo.is-on use {
-    stroke-dasharray: calc(var(--len) * 1px) var(--total);
-    stroke-dashoffset: calc(var(--off) * -1px);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .logo use { transition-duration: 1ms; }
+    stroke-dasharray: var(--len) var(--total);
+    stroke-dashoffset: calc(0px - var(--off));
   }
 </style>
 </head>
 <body>
 
-<button class="stage" type="button" aria-label="Replay the animation">
-  <svg class="logo" viewBox="0 0 300 200" role="img" aria-label="Design">
+<button class="stage" type="button" id="stage" aria-label="暫停動畫">
+  <svg class="logo" id="logo" viewBox="0 0 300 200" role="img" aria-label="Design">
     <defs>
       <path id="stroke" d="
         M  0,  0
@@ -100,7 +95,7 @@
 </button>
 
 <script>
-  // [起點 offset, 筆劃長度]，沿著 #stroke 依序取樣（原本散落在 11 條 CSS 規則裡）
+  // [起點 offset, 筆劃長度]，沿著 #stroke 依序取樣
   const SEGMENTS = [
     [149, 22], [201.3, 49],     // d
     [377.5, 14], [431.2, 43],   // e
@@ -111,36 +106,59 @@
   ];
 
   const DRAW = 5500;            // 畫完一次要多久
-  const HOLD = 1500;            // 畫完後停留多久再反轉
+  const HOLD = 1500;            // 畫完 / 擦完後停留多久
+  const EASE = "cubic-bezier(0.445, 0.05, 0.55, 0.95)";
   const SVG_NS = "http://www.w3.org/2000/svg";
 
-  const logo = document.querySelector(".logo");
-  const stage = document.querySelector(".stage");
+  const logo = document.getElementById("logo");
+  const stage = document.getElementById("stage");
+  const path = document.getElementById("stroke");
 
-  logo.style.setProperty("--draw", DRAW + "ms");
+  // 路徑總長由瀏覽器算，不用手寫。改 d 屬性不會再默默壞掉。
+  // （dasharray 的第二個值就是「空白」，必須 >= 路徑長，否則圖案會沿路徑重複出現。）
+  const TOTAL = path.getTotalLength();
+  logo.style.setProperty("--total", TOTAL + "px");
 
-  logo.append(...SEGMENTS.map(([off, len]) => {
+  const strokes = SEGMENTS.map(([off, len]) => {
     const use = document.createElementNS(SVG_NS, "use");
     use.setAttribute("href", "#stroke");
-    use.style.setProperty("--off", off);
-    use.style.setProperty("--len", len);
+    use.style.setProperty("--off", off + "px");
+    use.style.setProperty("--len", len + "px");
     return use;
-  }));
-
-  let timer = null;
-  const toggle = () => logo.classList.toggle("is-on");
-
-  // 等一個 frame，讓瀏覽器先算出初始值，class 一加上去才會有 transition
-  requestAnimationFrame(() => {
-    toggle();
-    timer = setInterval(toggle, DRAW + HOLD);
   });
+  logo.append(...strokes);
 
-  stage.addEventListener("click", () => {
-    clearInterval(timer);       // 手動接管後就停掉自動輪播
-    timer = null;
-    toggle();
-  });
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    // 一圈 = 畫 → 停 → 擦 → 停。整個節奏交給動畫引擎，
+    // 不再用 setInterval 去「猜」transition 什麼時候結束（分頁切換後就會對不上）。
+    const cycle = (DRAW + HOLD) * 2;
+    const at = (ms) => ms / cycle;
+
+    const animations = strokes.map((use, i) => {
+      const [off, len] = SEGMENTS[i];
+      const blank = { strokeDasharray: `0px ${TOTAL}px`, strokeDashoffset: "0px" };
+      const drawn = { strokeDasharray: `${len}px ${TOTAL}px`, strokeDashoffset: `${-off}px` };
+      return use.animate(
+        [
+          { ...blank, offset: 0, easing: EASE },
+          { ...drawn, offset: at(DRAW) },
+          { ...drawn, offset: at(DRAW + HOLD), easing: EASE },
+          { ...blank, offset: at(DRAW * 2 + HOLD) },
+          { ...blank, offset: 1 },
+        ],
+        { duration: cycle, iterations: Infinity },
+      );
+    });
+
+    stage.addEventListener("click", () => {
+      const playing = animations[0].playState === "running";
+      for (const a of animations) playing ? a.pause() : a.play();
+      stage.setAttribute("aria-label", playing ? "播放動畫" : "暫停動畫");
+    });
+  } else {
+    stage.hidden = true;        // 沒有動畫可以播放，按鈕就沒有意義
+    document.body.append(logo); // 直接顯示畫好的 Design
+  }
 </script>
 
 </body>

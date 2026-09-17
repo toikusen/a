@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVG Path animated Text</title>
+<style>
+  :root {
+    --bg: #5677fc;
+    --ink: #f5f6f7;
+    --ease: cubic-bezier(0.445, 0.05, 0.55, 0.95);
+    --total: 1180px;        /* 整條路徑長度，用來把沒畫到的部分藏起來 */
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;    /* 取代原本用 JS 算 margin-top 置中 */
+    background: var(--bg);
+  }
+
+  .stage {
+    all: unset;             /* 用 button 取得鍵盤可操作性，外觀自己畫 */
+    cursor: pointer;
+    display: block;
+  }
+  .stage:focus-visible { outline: 2px solid var(--ink); outline-offset: 8px; }
+
+  .logo {
+    display: block;
+    width: min(600px, 90vw);
+    aspect-ratio: 3 / 2;
+  }
+
+  /* 每個筆劃只是同一條路徑的一段：--off 是起點，--len 是長度 */
+  .logo use {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 2px;
+    stroke-linecap: round;
+    stroke-dasharray: 0px var(--total);
+    stroke-dashoffset: 0px;
+    transition:
+      stroke-dasharray var(--draw, 5.5s) var(--ease),
+      stroke-dashoffset var(--draw, 5.5s) var(--ease);
+  }
+
+  .logo.is-on use {
+    stroke-dasharray: calc(var(--len) * 1px) var(--total);
+    stroke-dashoffset: calc(var(--off) * -1px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .logo use { transition-duration: 1ms; }
+  }
+</style>
+</head>
+<body>
+
+<button class="stage" type="button" aria-label="Replay the animation">
+  <svg class="logo" viewBox="0 0 300 200" role="img" aria-label="Design">
+    <defs>
+      <path id="stroke" d="
+        M  0,  0
+        C  0,  0  99,  1  99, 89
+        L 99,111
+        C 99,130  75,112  99,112
+        C103,112 100,112 106,112
+        C121,112 121, 89 105, 89
+        C 88, 89 102, 89  99, 89
+        C  0, 89  80,103 123,103
+        C128,103 135,103 136,103
+        C155,103 137,140 137,103
+        C137, 92 123, 93 123,103
+        C123,115 135,113 137,110
+        C152, 86 103, 87 143,110
+        C152,116 157,106 147,103
+        C140,102 143, 93 152, 96
+        C206,118 159.5,50 159,89
+        L159,112
+        C159,180 117, 93 168,118
+        C176,122 180,116 180,115
+        C183,107 169,101 168, 90
+        C167, 77 180, 67 180, 95
+        L180,103
+        C180,115 166,115 166,103
+        C166, 92 180, 94 180,102
+        C180,180 188,125 188,112
+        C188,110 188,100 188, 96
+        C188, 91 189, 80 194, 91
+        C200,101 186,134 188,106
+        C189, 93 201, 93 201,100
+        C201,105 201,105 201,112
+        C201,130 220,160 300, 80
+      "/>
+    </defs>
+    <!-- 筆劃由 JS 依 SEGMENTS 產生 -->
+  </svg>
+</button>
+
+<script>
+  // [起點 offset, 筆劃長度]，沿著 #stroke 依序取樣（原本散落在 11 條 CSS 規則裡）
+  const SEGMENTS = [
+    [149, 22], [201.3, 49],     // d
+    [377.5, 14], [431.2, 43],   // e
+    [526, 37],                  // s
+    [631, 0.1], [637.5, 16],    // i
+    [732.5, 15], [812, 69],     // g
+    [941, 17], [1013, 33.5],    // n
+  ];
+
+  const DRAW = 5500;            // 畫完一次要多久
+  const HOLD = 1500;            // 畫完後停留多久再反轉
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  const logo = document.querySelector(".logo");
+  const stage = document.querySelector(".stage");
+
+  logo.style.setProperty("--draw", DRAW + "ms");
+
+  logo.append(...SEGMENTS.map(([off, len]) => {
+    const use = document.createElementNS(SVG_NS, "use");
+    use.setAttribute("href", "#stroke");
+    use.style.setProperty("--off", off);
+    use.style.setProperty("--len", len);
+    return use;
+  }));
+
+  let timer = null;
+  const toggle = () => logo.classList.toggle("is-on");
+
+  // 等一個 frame，讓瀏覽器先算出初始值，class 一加上去才會有 transition
+  requestAnimationFrame(() => {
+    toggle();
+    timer = setInterval(toggle, DRAW + HOLD);
+  });
+
+  stage.addEventListener("click", () => {
+    clearInterval(timer);       // 手動接管後就停掉自動輪播
+    timer = null;
+    toggle();
+  });
+</script>
+
+</body>
+</html>

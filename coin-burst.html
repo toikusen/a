@@ -152,7 +152,8 @@
     position:absolute; inset:0; z-index:2;
     display:grid; place-items:center;
     background:rgba(6,12,8,.66);
-    backdrop-filter:blur(7px) saturate(.8);
+    -webkit-backdrop-filter:blur(7px) saturate(.8);
+            backdrop-filter:blur(7px) saturate(.8);
     opacity:0; visibility:hidden;
     transition:opacity .4s var(--ease-out), visibility .4s;
   }
@@ -396,48 +397,57 @@
     const ctrl = new AbortController();
     running = ctrl;
     const { signal } = ctrl;
+    const stop = () => signal.aborted;
 
     const from = balance;
     const to = balance + PRIZE;
 
-    claim.disabled = true;
-    amountEl.textContent = money.format(from);
-    reward.classList.add('is-on');
-    live.textContent = '';
+    try {
+      claim.disabled = true;
+      amountEl.textContent = money.format(from);
+      reward.classList.add('is-on');
+      live.textContent = '';
 
-    await wait(420, signal);
-    if (signal.aborted) return;
+      await wait(420, signal);
+      if (stop()) return;
 
-    wallet.classList.add('is-receiving');
-    toast.classList.add('is-on');
+      wallet.classList.add('is-receiving');
+      toast.classList.add('is-on');
 
-    const flight = flyCoins({
-      from: $('pile'),            // 從金幣堆噴出
-      to: walletIcon,             // 飛進錢包 icon
-      count: COINS,
-      duration: 380,
-      stagger: 34,
-      spread: 42,
-      size: 24,
-      signal,
-      onArrive: makeReceiver(from, to, COINS),
-    });
+      await flyCoins({
+        from: $('pile'),            // 從金幣堆噴出
+        to: walletIcon,             // 飛進錢包 icon
+        count: COINS,
+        duration: 380,
+        stagger: 34,
+        spread: 42,
+        size: 24,
+        signal,
+        onArrive: makeReceiver(from, to, COINS),
+      }).finished;
+      if (stop()) return;
 
-    await flight.finished;
-    if (signal.aborted) return;
+      balance = to;
+      amountEl.textContent = money.format(balance);
+      live.textContent = `已領取 +$${PRIZE}.00，餘額 ${money.format(balance)}`;
 
-    balance = to;
-    amountEl.textContent = money.format(balance);
-    live.textContent = `已領取 +$${PRIZE}.00，餘額 ${money.format(balance)}`;
+      await wait(420, signal); if (stop()) return;
+      wallet.classList.remove('is-receiving');
 
-    await wait(420, signal); if (signal.aborted) return;
-    wallet.classList.remove('is-receiving');
-
-    await wait(380, signal); if (signal.aborted) return;
-    toast.classList.remove('is-on');
-    reward.classList.remove('is-on');
-    claim.disabled = false;
-    running = null;
+      await wait(380, signal); if (stop()) return;
+      toast.classList.remove('is-on');
+      reward.classList.remove('is-on');
+    } finally {
+      // 只有「還是自己這一輪」才收拾 UI。
+      // 被後來的點擊接手時，收尾是新那輪的事，這裡什麼都不能動。
+      if (running === ctrl) {
+        claim.disabled = false;
+        wallet.classList.remove('is-receiving');
+        toast.classList.remove('is-on');
+        reward.classList.remove('is-on');
+        running = null;
+      }
+    }
   }
 
   function wait(ms, signal) {

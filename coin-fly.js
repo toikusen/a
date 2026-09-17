@@ -59,6 +59,7 @@ const CSS = `
   position:fixed; inset:0;
   pointer-events:none;
   contain:layout style;
+  overflow:hidden;   /* Safari < 16 的退路 */
   overflow:clip;
 }
 .${COIN_CLASS}{
@@ -211,13 +212,16 @@ export function flyCoins(options = {}) {
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const animations = [];
   const nodes = [];
+  const timers = [];
   let settled = false;
   let resolveFinished;
   const finished = new Promise((r) => { resolveFinished = r; });
 
   const cleanup = () => {
     for (const n of nodes) n.remove();
+    for (const t of timers) clearInterval(t);
     nodes.length = 0;
+    timers.length = 0;
     signal?.removeEventListener('abort', cancel);
   };
   const settle = () => {
@@ -242,16 +246,25 @@ export function flyCoins(options = {}) {
     let i = 0;
     const id = setInterval(() => {
       if (settled) return clearInterval(id);
-      onArrive?.(i, cfg.count);
+      try { onArrive?.(i, cfg.count); } catch (err) { queueMicrotask(() => { throw err; }); }
       if (++i >= cfg.count) { clearInterval(id); settle(); }
     }, Math.max(16, span / cfg.count));
-    return { finished, cancel: () => { clearInterval(id); cancel(); } };
+    // 把 timer 掛進共用的 cleanup，signal.abort() 走的也是同一條收尾路徑
+    timers.push(id);
+    return { finished, cancel };
   }
 
   const host = ensureLayer(cfg.zIndex);
   const totalDelay = cfg.stagger * Math.max(0, cfg.count - 1);
   const frag = document.createDocumentFragment();
   let landed = 0;
+
+  // 起點 / 終點在這裡量一次就好。
+  // keyframes 必須在動畫開始前就全部算好才能交給合成執行緒跑，
+  // 所以整批金幣共用同一組座標——飛行途中目標若會移動（例如使用者捲動），
+  // 落點就會歪掉。那種情境要改用 rAF 每幀重算，代價是回到主執行緒。
+  const src = toPoint(cfg.from, cfg.fromAnchor);
+  const dst = toPoint(cfg.to, cfg.toAnchor);
 
   for (let i = 0; i < cfg.count; i++) {
     const coin = document.createElement('div');
@@ -265,15 +278,13 @@ export function flyCoins(options = {}) {
 
     const delay = totalDelay * spreadDelay(i, cfg.count);
 
-    // 起點在每顆金幣「自己發射的當下」量測，慢速捲動時也不會歪掉
-    const jitter = () => {
-      const a = rand(0, Math.PI * 2);
-      const r = Math.sqrt(Math.random()) * cfg.spread;
-      const p = toPoint(cfg.from, cfg.fromAnchor);
-      return { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r };
-    };
+    // 每顆金幣的出生點在起點附近抖一下，才不會像從同一個針孔冒出來。
+    // sqrt 是為了讓亂數均勻散佈在圓面積上，而不是擠在圓心。
+    const a = rand(0, Math.PI * 2);
+    const r = Math.sqrt(Math.random()) * cfg.spread;
+    const origin = { x: src.x + Math.cos(a) * r, y: src.y + Math.sin(a) * r };
 
-    const frames = buildKeyframes(jitter(), toPoint(cfg.to, cfg.toAnchor), cfg, cfg.size);
+    const frames = buildKeyframes(origin, dst, cfg, cfg.size);
 
     const flight = coin.animate(frames, {
       duration: cfg.duration,
@@ -292,10 +303,11 @@ export function flyCoins(options = {}) {
       () => {
         spin.cancel();
         coin.remove();
-        onArrive?.(i, cfg.count);
+        // 呼叫端的 callback 丟例外不該讓剩下的金幣卡住，也不該變成 unhandled rejection
+        try { onArrive?.(i, cfg.count); } catch (err) { queueMicrotask(() => { throw err; }); }
         if (++landed >= cfg.count) settle();
       },
-      () => {}, // cancel() 會 reject，已由 cancel 統一收尾
+      () => {}, // cancel() 會讓 finished reject，收尾統一由 cancel() 負責
     );
   }
 
